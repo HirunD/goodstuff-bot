@@ -1,11 +1,52 @@
 import { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, REST, Routes, SlashCommandBuilder } from 'discord.js';
+import { createClient } from '@supabase/supabase-js';
+
+// Initialize Supabase Client
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
+
+// Helper function to fetch tasks and format the interactive layout
+async function generateTodoListComponent() {
+    // Fetch only active (pending) tasks from the database
+    const { data: tasks, error } = await supabase
+        .from('todos')
+        .where('is_completed', false)
+        .order('created_at', { ascending: true });
+
+    if (error || !tasks || tasks.length === 0) {
+        return { content: "### 📝 Team To-Do List\n🎉 All caught up! No active tasks.", components: [] };
+    }
+
+    let listContent = "### 📝 Team To-Do List\n";
+    const rows = [];
+    let currentRow = new ActionRowBuilder();
+
+    tasks.forEach((task, index) => {
+        // Build the visible list text block
+        listContent += `${index + 1}. ⏳ **${task.task_text}** *(assigned to ${task.assigned_to})*\n`;
+
+        // Create a check-off button for each item (Max 5 buttons per row in Discord)
+        const checkButton = new ButtonBuilder()
+            .setCustomId(`complete_${task.id}`)
+            .setLabel(`✔ Clear #${index + 1}`)
+            .setStyle(ButtonStyle.Success);
+
+        if (currentRow.components.length >= 5) {
+            rows.push(currentRow);
+            currentRow = new ActionRowBuilder();
+        }
+        currentRow.addComponents(checkButton);
+    });
+
+    if (currentRow.components.length > 0) rows.push(currentRow);
+
+    return { content: listContent, components: rows };
+}
 
 client.once('ready', async () => {
     console.log(`Bot is online as ${client.user.tag}`);
     
-    // Register the /todo command
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
         await rest.put(
@@ -13,7 +54,7 @@ client.once('ready', async () => {
             { body: [
                 new SlashCommandBuilder()
                     .setName('todo')
-                    .setDescription('Post a new task to this channel')
+                    .setDescription('Add a new task to the team tracking queue')
                     .addStringOption(option => option.setName('task').setDescription('What needs to be done?').setRequired(true))
             ]}
         );
@@ -23,34 +64,40 @@ client.once('ready', async () => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-    // 1. Handle Clock In / Clock Out Buttons
-    if (interaction.isButton()) {
-        const timeString = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        
-        if (interaction.customId === 'clock_in') {
-            await interaction.reply({ content: `🟩 **${interaction.user.username}** clocked in at **${timeString}**` });
-        } else if (interaction.customId === 'clock_out') {
-            await interaction.reply({ content: `🟥 **${interaction.user.username}** clocked out at **${timeString}**` });
-        }
-    }
-
-    // 2. Handle /todo Slash Command
+    // 1. Handle Slash Command (/todo)
     if (interaction.isChatInputCommand() && interaction.commandName === 'todo') {
         const taskText = interaction.options.getString('task');
-        // Sends a message with a native Discord markdown checkbox
-        await interaction.reply({ content: `- [ ] ${taskText} *(assigned to ${interaction.user})*` });
-    }
-});
+        const assignedUser = interaction.user.username;
 
-// Setup Command to deploy the permanent interactive buttons
-client.on('messageCreate', async (message) => {
-    if (message.content === '!deploy' && message.member.permissions.has('Administrator')) {
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('clock_in').setLabel('Clock In').setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId('clock_out').setLabel('Clock Out').setStyle(ButtonStyle.Danger)
-        );
-        await message.channel.send({ content: '## ⏰ Company Clock\nTap a button below to log your shift directly to this channel.', components: [row] });
-        await message.delete(); // Cleans up the !deploy text command automatically
+        // Save the new task into the database row
+        await supabase
+            .from('todos')
+            .insert([{ task_text: taskText, assigned_to: assignedUser }]);
+
+        // Generate the fresh list showing previous items along with the new one
+        const todoList = await generateTodoListComponent();
+        
+        await interaction.reply({ content: `✅ Task added: "*${taskText}*"`, ephemeral: true });
+        
+        // Post the dynamic main list directly into the channel channel
+        return interaction.channel.send(todoList);
+    }
+
+    // 2. Handle Completing Tasks (Button Clicks)
+    if (interaction.isButton() && interaction.customId.startsWith('complete_')) {
+        const taskId = interaction.customId.split('_')[1];
+
+        // Mark that exact ID index row as true (completed)
+        await supabase
+            .from('todos')
+            .update({ is_completed: true })
+            .eq('id', taskId);
+
+        // Fetch the updated queue layout state
+        const updatedList = await generateTodoListComponent();
+
+        // Update the existing message instantly so it reflects the checked off item
+        return interaction.update(updatedList);
     }
 });
 
