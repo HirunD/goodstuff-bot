@@ -22,13 +22,19 @@ function generateLiveTodoList() {
     let currentRow = new ActionRowBuilder();
 
     localTodoQueue.forEach((task, index) => {
-        listContent += `${index + 1}. ⏳ **${task.text}** *(assigned to ${task.user})*\n`;
+        // If the task is completed, wrap it in a strikethrough (~~text~~)
+        if (task.is_completed) {
+            listContent += `${index + 1}. ✅ ~~**${task.text}** *(assigned to ${task.user})*~~\n`;
+        } else {
+            listContent += `${index + 1}. ⏳ **${task.text}** *(assigned to ${task.user})*\n`;
+        }
 
-        // Interactive clear button for each item
+        // Interactive clear button for each item (Disable the button if it's already cleared)
         const checkButton = new ButtonBuilder()
             .setCustomId(`clear_task_${task.id}`)
             .setLabel(`✔ Clear #${index + 1}`)
-            .setStyle(ButtonStyle.Success);
+            .setStyle(ButtonStyle.Success)
+            .setDisabled(task.is_completed);
 
         if (currentRow.components.length >= 5) {
             rows.push(currentRow);
@@ -79,20 +85,20 @@ client.on('interactionCreate', async (interaction) => {
         if (interaction.commandName === 'todo') {
             const rawTasksString = interaction.options.getString('tasks');
             const assignedUser = interaction.user.username;
+            const creatorId = interaction.user.id; // Capture who created this list batch
 
-            // Split the text by commas, trim away extra spaces, and filter out empty items
             const parsedTasks = rawTasksString
                 .split(',')
                 .map(item => item.trim())
                 .filter(item => item.length > 0);
 
-            // Add each valid item to our live memory array
             parsedTasks.forEach((taskText, i) => {
                 localTodoQueue.push({
-                    // Use a slightly offset timestamp to make sure IDs remain completely unique
                     id: (Date.now() + i).toString(),
                     text: taskText,
-                    user: assignedUser
+                    user: assignedUser,
+                    creator_id: creatorId, // Save the author constraint ID
+                    is_completed: false    // Track state instead of dropping from memory
                 });
             });
 
@@ -113,9 +119,24 @@ client.on('interactionCreate', async (interaction) => {
 
         if (interaction.customId.startsWith('clear_task_')) {
             const targetId = interaction.customId.split('_')[2];
+            
+            // Find the item in memory first to check permissions
+            const targetTask = localTodoQueue.find(task => task.id === targetId);
 
-            // Filter out the cleared item from active memory array
-            localTodoQueue = localTodoQueue.filter(task => task.id !== targetId);
+            if (!targetTask) {
+                return interaction.reply({ content: "⚠️ Task not found in active memory queue.", ephemeral: true });
+            }
+
+            // Lock check: Compare the ID of the person clicking to the author who made it
+            if (interaction.user.id !== targetTask.creator_id) {
+                return interaction.reply({ 
+                    content: `🔒 Only the list creator (**@${targetTask.user}**) has permission to tick this off.`, 
+                    ephemeral: true // This warning is hidden from everyone else in the server
+                });
+            }
+
+            // Flip the state of the targeted task item to completed
+            targetTask.is_completed = true;
 
             const freshlyUpdatedLayout = generateLiveTodoList();
             return interaction.update(freshlyUpdatedLayout);
