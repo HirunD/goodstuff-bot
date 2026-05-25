@@ -1,109 +1,125 @@
 import { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, REST, Routes, SlashCommandBuilder } from 'discord.js';
-import Datastore from 'nedb-async';
 
-// Initialize a local file-based database
-const db = new Datastore({ filename: 'todos.db', autoplay: true });
+const client = new Client({ 
+    intents: [
+        GatewayIntentBits.Guilds, 
+        GatewayIntentBits.GuildMessages, 
+        GatewayIntentBits.MessageContent
+    ] 
+});
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
+// Live, offline storage array for holding tasks while the bot is running
+let localTodoQueue = [];
 
-// Helper function to fetch tasks and format the interactive layout
-async function generateTodoListComponent() {
-    try {
-        // Fetch only active (pending) tasks from the local file
-        const tasks = await db.asyncFind({ is_completed: false });
-        
-        // Sort by creation time (oldest first)
-        tasks.sort((a, b) => a.created_at - b.created_at);
-
-        if (!tasks || tasks.length === 0) {
-            return { content: "### 📝 Team To-Do List\n🎉 All caught up! No active tasks.", components: [] };
-        }
-
-        let listContent = "### 📝 Team To-Do List\n";
-        const rows = [];
-        let currentRow = new ActionRowBuilder();
-
-        tasks.forEach((task, index) => {
-            listContent += `${index + 1}. ⏳ **${task.task_text}** *(assigned to ${task.assigned_to})*\n`;
-
-            // Create a check-off button for each item (Max 5 buttons per row in Discord)
-            const checkButton = new ButtonBuilder()
-                .setCustomId(`complete_${task._id}`) // NeDB automatically creates a unique '_id'
-                .setLabel(`✔ Clear #${index + 1}`)
-                .setStyle(ButtonStyle.Success);
-
-            if (currentRow.components.length >= 5) {
-                rows.push(currentRow);
-                currentRow = new ActionRowBuilder();
-            }
-            currentRow.addComponents(checkButton);
-        });
-
-        if (currentRow.components.length > 0) rows.push(currentRow);
-
-        return { content: listContent, components: rows };
-    } catch (error) {
-        console.error("Local DB Fetch Error:", error);
-        return { content: "⚠️ **Error fetching tasks from internal storage.**", components: [] };
+// Helper function to build the interactive layout using live memory data
+function generateLiveTodoList() {
+    if (localTodoQueue.length === 0) {
+        return { content: "### 📝 Team To-Do List\n🎉 All caught up! No active tasks.", components: [] };
     }
+
+    let listContent = "### 📝 Team To-Do List\n";
+    const rows = [];
+    let currentRow = new ActionRowBuilder();
+
+    localTodoQueue.forEach((task, index) => {
+        listContent += `${index + 1}. ⏳ **${task.text}** *(assigned to ${task.user})*\n`;
+
+        // Interactive clear button for each item
+        const checkButton = new ButtonBuilder()
+            .setCustomId(`clear_task_${task.id}`)
+            .setLabel(`✔ Clear #${index + 1}`)
+            .setStyle(ButtonStyle.Success);
+
+        if (currentRow.components.length >= 5) {
+            rows.push(currentRow);
+            currentRow = new ActionRowBuilder();
+        }
+        currentRow.addComponents(checkButton);
+    });
+
+    if (currentRow.components.length > 0) rows.push(currentRow);
+
+    return { content: listContent, components: rows };
 }
 
 client.once('ready', async () => {
-    console.log(`🚀 Bot is online locally as ${client.user.tag}`);
+    console.log(`🟩 Workspace Bot is live as ${client.user.tag}`);
     
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
         await rest.put(
             Routes.applicationCommands(client.user.id),
             { body: [
+                // 1. The Clock In/Out control command
+                new SlashCommandBuilder()
+                    .setName('deploy')
+                    .setDescription('Spawn the interactive team attendance dashboard'),
+                // 2. The local task logger command
                 new SlashCommandBuilder()
                     .setName('todo')
-                    .setDescription('Add a new task to the team tracking queue')
+                    .setDescription('Add a temporary task to the active channel queue')
                     .addStringOption(option => option.setName('task').setDescription('What needs to be done?').setRequired(true))
             ]}
         );
     } catch (error) {
-        console.error("Slash Command Registration Error:", error);
+        console.error("Command Registration Error:", error);
     }
 });
 
 client.on('interactionCreate', async (interaction) => {
-    if (interaction.isChatInputCommand() && interaction.commandName === 'todo') {
-        const taskText = interaction.options.getString('task');
-        const assignedUser = interaction.user.username;
+    // --- HAndle Slash Commands ---
+    if (interaction.isChatInputCommand()) {
+        
+        // 1. /deploy (Clock In / Clock Out Control Interface)
+        if (interaction.commandName === 'deploy') {
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('clock_in').setLabel('🟢 Clock In').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId('clock_out').setLabel('🔴 Clock Out').setStyle(ButtonStyle.Danger)
+            );
+            return interaction.reply({ content: '### 🏢 Shift Attendance Station\nUse the options below to log your status.', components: [row] });
+        }
 
-        try {
-            await interaction.deferReply();
+        // 2. /todo (Add local offline tasks)
+        if (interaction.commandName === 'todo') {
+            const taskText = interaction.options.getString('task');
+            const assignedUser = interaction.user.username;
 
-            // Insert new task object directly into the local file
-            await db.asyncInsert({
-                task_text: taskText,
-                assigned_to: assignedUser,
-                is_completed: false,
-                created_at: Date.now()
-            });
+            // Generate a temporary unique timestamp ID
+            const taskObj = {
+                id: Date.now().toString(),
+                text: taskText,
+                user: assignedUser
+            };
 
-            const todoList = await generateTodoListComponent();
-            await interaction.editReply(todoList);
-        } catch (err) {
-            console.error("Task creation failure:", err);
-            await interaction.editReply({ content: "❌ Failed to create task locally." });
+            localTodoQueue.push(taskObj);
+
+            const updatedLayout = generateLiveTodoList();
+            return interaction.reply(updatedLayout);
         }
     }
 
-    if (interaction.isButton() && interaction.customId.startsWith('complete_')) {
-        const taskId = interaction.customId.split('_')[1];
+    // --- Handle Button Actions ---
+    if (interaction.isButton()) {
+        
+        // Handle attendance logging buttons
+        if (interaction.customId === 'clock_in') {
+            return interaction.reply({ content: `👋 **${interaction.user.username}** checked in at <t:${Math.floor(Date.now() / 1000)}:t>!` });
+        }
+        if (interaction.customId === 'clock_out') {
+            return interaction.reply({ content: `🚪 **${interaction.user.username}** checked out at <t:${Math.floor(Date.now() / 1000)}:t>!` });
+        }
 
-        try {
-            await interaction.deferUpdate();
+        // Handle dynamic to-do clearing buttons
+        if (interaction.customId.startsWith('clear_task_')) {
+            const targetId = interaction.customId.split('_')[2];
 
-            // Update the local object row using its ID
-            await db.asyncUpdate({ _id: taskId }, { $set: { is_completed: true } });
+            // Filter out the cleared item from active memory array
+            localTodoQueue = localTodoQueue.filter(task => task.id !== targetId);
 
-            const updatedList = await generateTodoListComponent();
-            await interaction.editReply(updatedList);
-        } catch (err) {
-            console.error("Button handling error:", err);
+            const freshlyUpdatedLayout = generateLiveTodoList();
+            
+            // Edit the message in place instantly
+            return interaction.update(freshlyUpdatedLayout);
         }
     }
 });
