@@ -8,13 +8,19 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBit
 
 // Helper function to fetch tasks and format the interactive layout
 async function generateTodoListComponent() {
-    // Fetch only active (pending) tasks from the database
+    // Fetch only active (pending) tasks from the database using correct syntax (.eq)
     const { data: tasks, error } = await supabase
         .from('todos')
-        .where('is_completed', false)
+        .select('*')
+        .eq('is_completed', false)
         .order('created_at', { ascending: true });
 
-    if (error || !tasks || tasks.length === 0) {
+    if (error) {
+        console.error("Supabase Fetch Error:", error);
+        return { content: "⚠️ **Error fetching tasks from database.**", components: [] };
+    }
+
+    if (!tasks || tasks.length === 0) {
         return { content: "### 📝 Team To-Do List\n🎉 All caught up! No active tasks.", components: [] };
     }
 
@@ -59,7 +65,7 @@ client.once('ready', async () => {
             ]}
         );
     } catch (error) {
-        console.error(error);
+        console.error("Slash Command Registration Error:", error);
     }
 });
 
@@ -69,35 +75,52 @@ client.on('interactionCreate', async (interaction) => {
         const taskText = interaction.options.getString('task');
         const assignedUser = interaction.user.username;
 
-        // Save the new task into the database row
-        await supabase
-            .from('todos')
-            .insert([{ task_text: taskText, assigned_to: assignedUser }]);
+        try {
+            // Instantly tell Discord to relax and show "goodstuff-bot is thinking..."
+            await interaction.deferReply();
 
-        // Generate the fresh list showing previous items along with the new one
-        const todoList = await generateTodoListComponent();
-        
-        await interaction.reply({ content: `✅ Task added: "*${taskText}*"`, ephemeral: true });
-        
-        // Post the dynamic main list directly into the channel channel
-        return interaction.channel.send(todoList);
+            // Save the new task into the database row
+            const { error: insertError } = await supabase
+                .from('todos')
+                .insert([{ task_text: taskText, assigned_to: assignedUser }]);
+
+            if (insertError) throw insertError;
+
+            // Generate the fresh components layout
+            const todoList = await generateTodoListComponent();
+            
+            // Edit our initial "thinking" response with the final interactive dashboard list
+            await interaction.editReply(todoList);
+        } catch (err) {
+            console.error("Interaction Error:", err);
+            await interaction.editReply({ content: "❌ Failed to create task. Check Railway server logs." });
+        }
     }
 
     // 2. Handle Completing Tasks (Button Clicks)
     if (interaction.isButton() && interaction.customId.startsWith('complete_')) {
         const taskId = interaction.customId.split('_')[1];
 
-        // Mark that exact ID index row as true (completed)
-        await supabase
-            .from('todos')
-            .update({ is_completed: true })
-            .eq('id', taskId);
+        try {
+            // Instantly acknowledge the button press so it doesn't spin or timeout
+            await interaction.deferUpdate();
 
-        // Fetch the updated queue layout state
-        const updatedList = await generateTodoListComponent();
+            // Mark that exact ID index row as true (completed)
+            const { error: updateError } = await supabase
+                .from('todos')
+                .update({ is_completed: true })
+                .eq('id', taskId);
 
-        // Update the existing message instantly so it reflects the checked off item
-        return interaction.update(updatedList);
+            if (updateError) throw updateError;
+
+            // Fetch the updated queue layout state
+            const updatedList = await generateTodoListComponent();
+
+            // Update the existing dashboard message seamlessly
+            await interaction.editReply(updatedList);
+        } catch (err) {
+            console.error("Button handling error:", err);
+        }
     }
 });
 
