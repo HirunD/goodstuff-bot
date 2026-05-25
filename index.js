@@ -50,15 +50,13 @@ client.once('ready', async () => {
         await rest.put(
             Routes.applicationCommands(client.user.id),
             { body: [
-                // 1. The Clock In/Out control command
                 new SlashCommandBuilder()
                     .setName('deploy')
                     .setDescription('Spawn the interactive team attendance dashboard'),
-                // 2. The local task logger command
                 new SlashCommandBuilder()
                     .setName('todo')
-                    .setDescription('Add a temporary task to the active channel queue')
-                    .addStringOption(option => option.setName('task').setDescription('What needs to be done?').setRequired(true))
+                    .setDescription('Add tasks to the queue (separate multiple items with a comma)')
+                    .addStringOption(option => option.setName('tasks').setDescription('e.g., Fix routing, Update design, Client sync').setRequired(true))
             ]}
         );
     } catch (error) {
@@ -67,10 +65,9 @@ client.once('ready', async () => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-    // --- HAndle Slash Commands ---
+    // --- Handle Slash Commands ---
     if (interaction.isChatInputCommand()) {
         
-        // 1. /deploy (Clock In / Clock Out Control Interface)
         if (interaction.commandName === 'deploy') {
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('clock_in').setLabel('🟢 Clock In').setStyle(ButtonStyle.Success),
@@ -79,19 +76,25 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: '### 🏢 Shift Attendance Station\nUse the options below to log your status.', components: [row] });
         }
 
-        // 2. /todo (Add local offline tasks)
         if (interaction.commandName === 'todo') {
-            const taskText = interaction.options.getString('task');
+            const rawTasksString = interaction.options.getString('tasks');
             const assignedUser = interaction.user.username;
 
-            // Generate a temporary unique timestamp ID
-            const taskObj = {
-                id: Date.now().toString(),
-                text: taskText,
-                user: assignedUser
-            };
+            // Split the text by commas, trim away extra spaces, and filter out empty items
+            const parsedTasks = rawTasksString
+                .split(',')
+                .map(item => item.trim())
+                .filter(item => item.length > 0);
 
-            localTodoQueue.push(taskObj);
+            // Add each valid item to our live memory array
+            parsedTasks.forEach((taskText, i) => {
+                localTodoQueue.push({
+                    // Use a slightly offset timestamp to make sure IDs remain completely unique
+                    id: (Date.now() + i).toString(),
+                    text: taskText,
+                    user: assignedUser
+                });
+            });
 
             const updatedLayout = generateLiveTodoList();
             return interaction.reply(updatedLayout);
@@ -101,7 +104,6 @@ client.on('interactionCreate', async (interaction) => {
     // --- Handle Button Actions ---
     if (interaction.isButton()) {
         
-        // Handle attendance logging buttons
         if (interaction.customId === 'clock_in') {
             return interaction.reply({ content: `👋 **${interaction.user.username}** checked in at <t:${Math.floor(Date.now() / 1000)}:t>!` });
         }
@@ -109,7 +111,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: `🚪 **${interaction.user.username}** checked out at <t:${Math.floor(Date.now() / 1000)}:t>!` });
         }
 
-        // Handle dynamic to-do clearing buttons
         if (interaction.customId.startsWith('clear_task_')) {
             const targetId = interaction.customId.split('_')[2];
 
@@ -117,8 +118,6 @@ client.on('interactionCreate', async (interaction) => {
             localTodoQueue = localTodoQueue.filter(task => task.id !== targetId);
 
             const freshlyUpdatedLayout = generateLiveTodoList();
-            
-            // Edit the message in place instantly
             return interaction.update(freshlyUpdatedLayout);
         }
     }
