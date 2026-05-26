@@ -85,7 +85,11 @@ client.on('interactionCreate', async (interaction) => {
         if (interaction.commandName === 'todo') {
             const rawTasksString = interaction.options.getString('tasks');
             const assignedUser = interaction.user.username;
-            const creatorId = interaction.user.id; // Capture who created this list batch
+            const creatorId = interaction.user.id;
+
+            // CRITICAL FIX: Before adding new tasks, wipe any previously completed 
+            // tasks entirely out of the background queue array.
+            localTodoQueue = localTodoQueue.filter(task => !task.is_completed);
 
             const parsedTasks = rawTasksString
                 .split(',')
@@ -97,8 +101,8 @@ client.on('interactionCreate', async (interaction) => {
                     id: (Date.now() + i).toString(),
                     text: taskText,
                     user: assignedUser,
-                    creator_id: creatorId, // Save the author constraint ID
-                    is_completed: false    // Track state instead of dropping from memory
+                    creator_id: creatorId,
+                    is_completed: false    
                 });
             });
 
@@ -120,22 +124,21 @@ client.on('interactionCreate', async (interaction) => {
         if (interaction.customId.startsWith('clear_task_')) {
             const targetId = interaction.customId.split('_')[2];
             
-            // Find the item in memory first to check permissions
             const targetTask = localTodoQueue.find(task => task.id === targetId);
 
             if (!targetTask) {
                 return interaction.reply({ content: "⚠️ Task not found in active memory queue.", ephemeral: true });
             }
 
-            // Lock check: Compare the ID of the person clicking to the author who made it
             if (interaction.user.id !== targetTask.creator_id) {
                 return interaction.reply({ 
                     content: `🔒 Only the list creator (**@${targetTask.user}**) has permission to tick this off.`, 
-                    ephemeral: true // This warning is hidden from everyone else in the server
+                    ephemeral: true 
                 });
             }
 
-            // Flip the state of the targeted task item to completed
+            // Mark completed. The generateLiveTodoList() function will instantly 
+            // strike it through on THIS specific message frame.
             targetTask.is_completed = true;
 
             const freshlyUpdatedLayout = generateLiveTodoList();
