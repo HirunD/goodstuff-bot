@@ -1,4 +1,5 @@
 import { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, REST, Routes, SlashCommandBuilder } from 'discord.js';
+import cron from 'node-cron';
 
 const client = new Client({ 
     intents: [
@@ -8,10 +9,8 @@ const client = new Client({
     ] 
 });
 
-// Live, offline storage array for holding tasks while the bot is running
 let localTodoQueue = [];
 
-// Helper function to build the interactive layout using live memory data
 function generateLiveTodoList() {
     if (localTodoQueue.length === 0) {
         return { content: "### 📝 Team To-Do List\n🎉 All caught up! No active tasks.", components: [] };
@@ -22,14 +21,12 @@ function generateLiveTodoList() {
     let currentRow = new ActionRowBuilder();
 
     localTodoQueue.forEach((task, index) => {
-        // If the task is completed, wrap it in a strikethrough (~~text~~)
         if (task.is_completed) {
             listContent += `${index + 1}. ✅ ~~**${task.text}** *(assigned to ${task.user})*~~\n`;
         } else {
             listContent += `${index + 1}. ⏳ **${task.text}** *(assigned to ${task.user})*\n`;
         }
 
-        // Interactive clear button for each item (Disable the button if it's already cleared)
         const checkButton = new ButtonBuilder()
             .setCustomId(`clear_task_${task.id}`)
             .setLabel(`✔ Clear #${index + 1}`)
@@ -51,18 +48,44 @@ function generateLiveTodoList() {
 client.once('ready', async () => {
     console.log(`🟩 Workspace Bot is live as ${client.user.tag}`);
     
+    // --- AUTOMATED MORNING ALARM (8:30 AM) ---
+    // Syntax profile: (Minute Hour DayOfMonth Month DayOfWeek)
+    // '30 8 * * *' fires exactly at 08:30 AM every single day.
+    cron.schedule('30 8 * * *', async () => {
+        console.log("⏰ Running scheduled 8:30 AM channel initialization broadcast...");
+        
+        const channelId = process.env.ANNOUNCEMENT_CHANNEL_ID;
+        if (!channelId) {
+            console.error("⚠️ Automation Skipped: Missing ANNOUNCEMENT_CHANNEL_ID variable on Railway.");
+            return;
+        }
+
+        try {
+            const targetChannel = await client.channels.fetch(channelId);
+            if (targetChannel) {
+                await targetChannel.send({
+                    content: "🌅 **Good Morning Team!**\n\nHope everyone is geared up for a great day ahead. Remember to use `/deploy` to log your shift clock-ins when you get started, and track active cards with `/todo`! Let's get it. ⚡"
+                });
+            }
+        } catch (err) {
+            console.error("Failed to execute automatic message send:", err);
+        }
+    }, {
+        scheduled: true,
+        timezone: "Asia/Colombo" // Keeps the execution perfectly timed to your local schedule
+    });
+
+    // Register slash commands
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
         await rest.put(
             Routes.applicationCommands(client.user.id),
             { body: [
-                new SlashCommandBuilder()
-                    .setName('deploy')
-                    .setDescription('Spawn the interactive team attendance dashboard'),
+                new SlashCommandBuilder().setName('deploy').setDescription('Spawn the interactive team attendance dashboard'),
                 new SlashCommandBuilder()
                     .setName('todo')
                     .setDescription('Add tasks to the queue (separate multiple items with a comma)')
-                    .addStringOption(option => option.setName('tasks').setDescription('e.g., Fix routing, Update design, Client sync').setRequired(true))
+                    .addStringOption(option => option.setName('tasks').setDescription('e.g., Fix routing, Update design').setRequired(true))
             ]}
         );
     } catch (error) {
@@ -71,9 +94,7 @@ client.once('ready', async () => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-    // --- Handle Slash Commands ---
     if (interaction.isChatInputCommand()) {
-        
         if (interaction.commandName === 'deploy') {
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('clock_in').setLabel('🟢 Clock In').setStyle(ButtonStyle.Success),
@@ -87,14 +108,9 @@ client.on('interactionCreate', async (interaction) => {
             const assignedUser = interaction.user.username;
             const creatorId = interaction.user.id;
 
-            // CRITICAL FIX: Before adding new tasks, wipe any previously completed 
-            // tasks entirely out of the background queue array.
             localTodoQueue = localTodoQueue.filter(task => !task.is_completed);
 
-            const parsedTasks = rawTasksString
-                .split(',')
-                .map(item => item.trim())
-                .filter(item => item.length > 0);
+            const parsedTasks = rawTasksString.split(',').map(item => item.trim()).filter(item => item.length > 0);
 
             parsedTasks.forEach((taskText, i) => {
                 localTodoQueue.push({
@@ -111,9 +127,7 @@ client.on('interactionCreate', async (interaction) => {
         }
     }
 
-    // --- Handle Button Actions ---
     if (interaction.isButton()) {
-        
         if (interaction.customId === 'clock_in') {
             return interaction.reply({ content: `👋 **${interaction.user.username}** checked in at <t:${Math.floor(Date.now() / 1000)}:t>!` });
         }
@@ -123,7 +137,6 @@ client.on('interactionCreate', async (interaction) => {
 
         if (interaction.customId.startsWith('clear_task_')) {
             const targetId = interaction.customId.split('_')[2];
-            
             const targetTask = localTodoQueue.find(task => task.id === targetId);
 
             if (!targetTask) {
@@ -131,16 +144,10 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (interaction.user.id !== targetTask.creator_id) {
-                return interaction.reply({ 
-                    content: `🔒 Only the list creator (**@${targetTask.user}**) has permission to tick this off.`, 
-                    ephemeral: true 
-                });
+                return interaction.reply({ content: `🔒 Only the list creator (**@${targetTask.user}**) has permission to tick this off.`, ephemeral: true });
             }
 
-            // Mark completed. The generateLiveTodoList() function will instantly 
-            // strike it through on THIS specific message frame.
             targetTask.is_completed = true;
-
             const freshlyUpdatedLayout = generateLiveTodoList();
             return interaction.update(freshlyUpdatedLayout);
         }
