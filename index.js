@@ -11,6 +11,7 @@ const client = new Client({
 
 let localTodoQueue = [];
 
+// Helper function to build the interactive layout using live memory data
 function generateLiveTodoList() {
     if (localTodoQueue.length === 0) {
         return { content: "### 📝 Team To-Do List\n🎉 All caught up! No active tasks.", components: [] };
@@ -48,11 +49,9 @@ function generateLiveTodoList() {
 client.once('ready', async () => {
     console.log(`🟩 Workspace Bot is live as ${client.user.tag}`);
     
-    // --- AUTOMATED MORNING ALARM (8:30 AM) ---
-    // Syntax profile: (Minute Hour DayOfMonth Month DayOfWeek)
-    // '30 8 * * *' fires exactly at 08:30 AM every single day.
+    // --- AUTOMATED DAILY DASHBOARD DEPLOYMENT (8:30 AM) ---
     cron.schedule('30 8 * * *', async () => {
-        console.log("⏰ Running scheduled 8:30 AM channel initialization broadcast...");
+        console.log("⏰ 8:30 AM hit. Automatically deploying Shift Attendance Station...");
         
         const channelId = process.env.ANNOUNCEMENT_CHANNEL_ID;
         if (!channelId) {
@@ -63,16 +62,24 @@ client.once('ready', async () => {
         try {
             const targetChannel = await client.channels.fetch(channelId);
             if (targetChannel) {
-                await targetChannel.send({
-                    content: "🌅 **Good Morning Team!**\n\nHope everyone is geared up for a great day ahead. Remember to use `/deploy` to log your shift clock-ins when you get started, and track active cards with `/todo`! Let's get it. ⚡"
+                // Build the active interactive layout panel
+                const attendanceRow = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('clock_in').setLabel('🟢 Clock In').setStyle(ButtonStyle.Success),
+                    new ButtonBuilder().setCustomId('clock_out').setLabel('🔴 Clock Out').setStyle(ButtonStyle.Danger)
+                );
+
+                // Ship the functional station interface directly to the channel
+                await targetChannel.send({ 
+                    content: '### 🏢 Shift Attendance Station\nUse the options below to log your status.', 
+                    components: [attendanceRow] 
                 });
             }
         } catch (err) {
-            console.error("Failed to execute automatic message send:", err);
+            console.error("Failed to automatically deploy attendance station:", err);
         }
     }, {
         scheduled: true,
-        timezone: "Asia/Colombo" // Keeps the execution perfectly timed to your local schedule
+        timezone: "Asia/Colombo"
     });
 
     // Register slash commands
@@ -94,6 +101,7 @@ client.once('ready', async () => {
 });
 
 client.on('interactionCreate', async (interaction) => {
+    // --- Handle Slash Commands ---
     if (interaction.isChatInputCommand()) {
         if (interaction.commandName === 'deploy') {
             const row = new ActionRowBuilder().addComponents(
@@ -127,6 +135,7 @@ client.on('interactionCreate', async (interaction) => {
         }
     }
 
+    // --- Handle Button Actions ---
     if (interaction.isButton()) {
         if (interaction.customId === 'clock_in') {
             return interaction.reply({ content: `👋 **${interaction.user.username}** checked in at <t:${Math.floor(Date.now() / 1000)}:t>!` });
