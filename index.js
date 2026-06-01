@@ -9,37 +9,56 @@ const client = new Client({
     ] 
 });
 
+// One shared background queue holding everyone's active tasks
 let localTodoQueue = [];
 
-// Helper function to build the interactive layout using live memory data
+// Helper function to sort and group the master list by team member
 function generateLiveTodoList() {
     if (localTodoQueue.length === 0) {
         return { content: "### 📝 Team To-Do List\n🎉 All caught up! No active tasks.", components: [] };
     }
 
+    // Group tasks dynamically by the username of the person who created them
+    const groupedTasks = {};
+    localTodoQueue.forEach((task) => {
+        if (!groupedTasks[task.user]) {
+            groupedTasks[task.user] = [];
+        }
+        groupedTasks[task.user].push(task);
+    });
+
     let listContent = "### 📝 Team To-Do List\n";
     const rows = [];
     let currentRow = new ActionRowBuilder();
+    let globalButtonIndex = 1;
 
-    localTodoQueue.forEach((task, index) => {
-        if (task.is_completed) {
-            listContent += `${index + 1}. ✅ ~~**${task.text}** *(assigned to ${task.user})*~~\n`;
-        } else {
-            listContent += `${index + 1}. ⏳ **${task.text}** *(assigned to ${task.user})*\n`;
-        }
+    // Build clean sections for each teammate automatically
+    for (const [username, tasks] of Object.entries(groupedTasks)) {
+        listContent += `\n👤 **@${username}**\n`;
+        
+        tasks.forEach((task) => {
+            if (task.is_completed) {
+                listContent += `  ${globalButtonIndex}. ✅ ~~${task.text}~~\n`;
+            } else {
+                listContent += `  ${globalButtonIndex}. ⏳ ${task.text}\n`;
+            }
 
-        const checkButton = new ButtonBuilder()
-            .setCustomId(`clear_task_${task.id}`)
-            .setLabel(`✔ Clear #${index + 1}`)
-            .setStyle(ButtonStyle.Success)
-            .setDisabled(task.is_completed);
+            // Interactive clear button mapped to the item position
+            const checkButton = new ButtonBuilder()
+                .setCustomId(`clear_task_${task.id}`)
+                .setLabel(`✔ Clear #${globalButtonIndex}`)
+                .setStyle(ButtonStyle.Success)
+                .setDisabled(task.is_completed);
 
-        if (currentRow.components.length >= 5) {
-            rows.push(currentRow);
-            currentRow = new ActionRowBuilder();
-        }
-        currentRow.addComponents(checkButton);
-    });
+            if (currentRow.components.length >= 5) {
+                rows.push(currentRow);
+                currentRow = new ActionRowBuilder();
+            }
+            currentRow.addComponents(checkButton);
+            
+            globalButtonIndex++;
+        });
+    }
 
     if (currentRow.components.length > 0) rows.push(currentRow);
 
@@ -52,30 +71,23 @@ client.once('ready', async () => {
     // --- AUTOMATED DAILY DASHBOARD DEPLOYMENT (8:30 AM) ---
     cron.schedule('30 8 * * *', async () => {
         console.log("⏰ 8:30 AM hit. Automatically deploying Shift Attendance Station...");
-        
         const channelId = process.env.ANNOUNCEMENT_CHANNEL_ID;
-        if (!channelId) {
-            console.error("⚠️ Automation Skipped: Missing ANNOUNCEMENT_CHANNEL_ID variable on Railway.");
-            return;
-        }
+        if (!channelId) return;
 
         try {
             const targetChannel = await client.channels.fetch(channelId);
             if (targetChannel) {
-                // Build the active interactive layout panel
                 const attendanceRow = new ActionRowBuilder().addComponents(
                     new ButtonBuilder().setCustomId('clock_in').setLabel('🟢 Clock In').setStyle(ButtonStyle.Success),
                     new ButtonBuilder().setCustomId('clock_out').setLabel('🔴 Clock Out').setStyle(ButtonStyle.Danger)
                 );
-
-                // Ship the functional station interface directly to the channel
                 await targetChannel.send({ 
                     content: '### 🏢 Shift Attendance Station\nUse the options below to log your status.', 
                     components: [attendanceRow] 
                 });
             }
         } catch (err) {
-            console.error("Failed to automatically deploy attendance station:", err);
+            console.error("Automation error:", err);
         }
     }, {
         scheduled: true,
@@ -91,8 +103,8 @@ client.once('ready', async () => {
                 new SlashCommandBuilder().setName('deploy').setDescription('Spawn the interactive team attendance dashboard'),
                 new SlashCommandBuilder()
                     .setName('todo')
-                    .setDescription('Add tasks to the queue (separate multiple items with a comma)')
-                    .addStringOption(option => option.setName('tasks').setDescription('e.g., Fix routing, Update design').setRequired(true))
+                    .setDescription('Add your tasks to the master team queue')
+                    .addStringOption(option => option.setName('tasks').setDescription('List your tasks separated by commas').setRequired(true))
             ]}
         );
     } catch (error) {
@@ -113,25 +125,28 @@ client.on('interactionCreate', async (interaction) => {
 
         if (interaction.commandName === 'todo') {
             const rawTasksString = interaction.options.getString('tasks');
-            const assignedUser = interaction.user.username;
+            const triggeringUser = interaction.user.username; // Explicitly capture who ran it
             const creatorId = interaction.user.id;
 
+            // Clear previously struck-through tasks entirely from background memory array
             localTodoQueue = localTodoQueue.filter(task => !task.is_completed);
 
+            // Split the input into clean individual items
             const parsedTasks = rawTasksString.split(',').map(item => item.trim()).filter(item => item.length > 0);
 
             parsedTasks.forEach((taskText, i) => {
                 localTodoQueue.push({
                     id: (Date.now() + i).toString(),
                     text: taskText,
-                    user: assignedUser,
+                    user: triggeringUser, // Log task directly under this user's bucket
                     creator_id: creatorId,
                     is_completed: false    
                 });
             });
 
-            const updatedLayout = generateLiveTodoList();
-            return interaction.reply(updatedLayout);
+            // Return the compiled master team list containing everyone's active items
+            const masterLayout = generateLiveTodoList();
+            return interaction.reply(masterLayout);
         }
     }
 
@@ -152,8 +167,9 @@ client.on('interactionCreate', async (interaction) => {
                 return interaction.reply({ content: "⚠️ Task not found in active memory queue.", ephemeral: true });
             }
 
+            // Lock Check: Only the individual user who added this task can clear it
             if (interaction.user.id !== targetTask.creator_id) {
-                return interaction.reply({ content: `🔒 Only the list creator (**@${targetTask.user}**) has permission to tick this off.`, ephemeral: true });
+                return interaction.reply({ content: `🔒 Only **@${targetTask.user}** has permission to clear this specific task.`, ephemeral: true });
             }
 
             targetTask.is_completed = true;
