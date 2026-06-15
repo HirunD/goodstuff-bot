@@ -1,5 +1,6 @@
 import { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, REST, Routes, SlashCommandBuilder } from 'discord.js';
 import cron from 'node-cron';
+import fs from 'fs';
 
 const client = new Client({ 
     intents: [
@@ -9,16 +10,37 @@ const client = new Client({
     ] 
 });
 
-// Shared background queue holding everyone's running tasks
+const FILE_PATH = './todos.json';
 let localTodoQueue = [];
 
-// Helper function to sort and group the master list by team member
+// Helper to load tasks safely from our local file on startup
+function loadTasksFromFile() {
+    try {
+        if (fs.existsSync(FILE_PATH)) {
+            const data = fs.readFileSync(FILE_PATH, 'utf8');
+            localTodoQueue = JSON.parse(data);
+            console.log(`💾 Loaded ${localTodoQueue.length} tasks from backup file.`);
+        }
+    } catch (err) {
+        console.error("⚠️ Failed to read backup file, starting fresh:", err);
+        localTodoQueue = [];
+    }
+}
+
+// Helper to save tasks instantly whenever a change happens
+function saveTasksToFile() {
+    try {
+        fs.writeFileSync(FILE_PATH, JSON.stringify(localTodoQueue, null, 2), 'utf8');
+    } catch (err) {
+        console.error("⚠️ Failed to write tasks to backup file:", err);
+    }
+}
+
 function generateLiveTodoList() {
     if (localTodoQueue.length === 0) {
         return { content: "### 📝 Team To-Do List\n🎉 All caught up! No active tasks right now.", components: [] };
     }
 
-    // Group tasks dynamically by the username of the person who created them
     const groupedTasks = {};
     localTodoQueue.forEach((task) => {
         if (!groupedTasks[task.user]) {
@@ -66,6 +88,9 @@ function generateLiveTodoList() {
 client.once('ready', async () => {
     console.log(`🟩 Workspace Bot is live as ${client.user.tag}`);
     
+    // Load existing data immediately when the bot boots up
+    loadTasksFromFile();
+    
     // --- AUTOMATED DAILY DASHBOARD DEPLOYMENT (8:30 AM) ---
     cron.schedule('30 8 * * *', async () => {
         console.log("⏰ 8:30 AM hit. Automatically deploying Shift Attendance Station...");
@@ -93,11 +118,10 @@ client.once('ready', async () => {
     });
 
     // --- SMART MIDNIGHT CLEANUP (00:00 AM) ---
-    // Instead of wiping everything, this ONLY drops completed tasks.
-    // Unfinished tasks carry over perfectly to the next morning!
     cron.schedule('0 0 * * *', () => {
-        console.log("🧹 Midnight hit. Cleaning out completed items, rolling active tasks over...");
+        console.log("🧹 Midnight hit. Cleaning out completed items...");
         localTodoQueue = localTodoQueue.filter(task => !task.is_completed);
+        saveTasksToFile(); // Save the clean rolled-over list
     }, {
         scheduled: true,
         timezone: "Asia/Colombo"
@@ -132,6 +156,9 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         if (interaction.commandName === 'todo') {
+            // Fix 1: Defer reply immediately so slow bootups don't trigger the Discord error layout
+            await interaction.deferReply();
+
             const rawTasksString = interaction.options.getString('tasks');
             const triggeringUser = interaction.user.username; 
             const creatorId = interaction.user.id;
@@ -148,8 +175,11 @@ client.on('interactionCreate', async (interaction) => {
                 });
             });
 
+            // Save changes locally right away
+            saveTasksToFile();
+
             const masterLayout = generateLiveTodoList();
-            return interaction.reply(masterLayout);
+            return interaction.editReply(masterLayout);
         }
     }
 
@@ -174,10 +204,14 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             targetTask.is_completed = true;
+            
+            // Save state updates safely
+            saveTasksToFile();
+
             const freshlyUpdatedLayout = generateLiveTodoList();
             return interaction.update(freshlyUpdatedLayout);
         }
     }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+client.client.login(process.env.DISCORD_TOKEN);
